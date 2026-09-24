@@ -1,0 +1,14 @@
+# бинарники
+xray-onion
+xray-onion.exe
+# приватные ключи узлов, директорий и личностей
+*.key
+# состояние и рабочие файлы, создаются при запуске
+node.json
+node*.json
+state.json
+nodes.json
+nodes*.json
+peers.json
+config.json
+*-log.json

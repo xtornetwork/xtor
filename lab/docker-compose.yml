@@ -1,0 +1,96 @@
+# Стенд xray-onion: три директории, два моста, четыре публичных узла, клиент.
+# Всё это — один и тот же бинарник с разными командами.
+#
+#   docker compose -f lab/docker-compose.yml up -d --build
+#   curl --socks5-hostname 127.0.0.1:9050 https://api.ipify.org
+#   docker compose -f lab/docker-compose.yml down -v
+x-node: &node
+  build: { context: .., dockerfile: lab/Dockerfile }
+  entrypoint: ["/node-entrypoint.sh"]
+  environment: &node-env
+    DIRECTORY: http://directory1:8500,http://directory2:8500,http://directory3:8500
+    TOKEN: labtoken
+    SNI: www.cloudflare.com
+    LOGLEVEL: warning
+    INTERVAL: 20s
+  depends_on: [directory1, directory2, directory3]
+  restart: unless-stopped
+
+x-directory: &directory
+  build: { context: .., dockerfile: lab/Dockerfile }
+  restart: unless-stopped
+
+services:
+  # три независимые директории: они не переговариваются между собой,
+  # клиент сам сводит их ответы по кворуму
+  directory1:
+    <<: *directory
+    command: ["directory", "-listen", "0.0.0.0", "-port", "8500",
+              "-token", "labtoken", "-bridge-token", "labbridge",
+              "-key", "/data/dir.key", "-state", "/data/nodes.json",
+              "-stale", "2m", "-cache", "5s",
+              "-probe-interval", "15s", "-probe-timeout", "3s",
+              "-witness-interval", "30s",
+              "-witness", "http://directory2:8500,http://directory3:8500"]
+    volumes: [dir1:/data]
+    ports: ["127.0.0.1:8501:8500"]
+  directory2:
+    <<: *directory
+    command: ["directory", "-listen", "0.0.0.0", "-port", "8500",
+              "-token", "labtoken", "-bridge-token", "labbridge",
+              "-key", "/data/dir.key", "-state", "/data/nodes.json",
+              "-stale", "2m", "-cache", "5s",
+              "-probe-interval", "15s", "-probe-timeout", "3s",
+              "-witness-interval", "30s",
+              "-witness", "http://directory1:8500,http://directory3:8500"]
+    volumes: [dir2:/data]
+    ports: ["127.0.0.1:8502:8500"]
+  directory3:
+    <<: *directory
+    command: ["directory", "-listen", "0.0.0.0", "-port", "8500",
+              "-token", "labtoken", "-bridge-token", "labbridge",
+              "-key", "/data/dir.key", "-state", "/data/nodes.json",
+              "-stale", "2m", "-cache", "5s",
+              "-probe-interval", "15s", "-probe-timeout", "3s",
+              "-witness-interval", "30s",
+              "-witness", "http://directory1:8500,http://directory2:8500"]
+    volumes: [dir3:/data]
+    ports: ["127.0.0.1:8503:8500"]
+
+  # непубличные входные узлы: в /consensus их нет, только в /bridges
+  bridge1:
+    <<: *node
+    environment: { <<: *node-env, NICK: bridge1, ROLES: guard, PRIVATE: "true" }
+  bridge2:
+    <<: *node
+    environment: { <<: *node-env, NICK: bridge2, ROLES: guard, PRIVATE: "true" }
+
+  guard1:
+    <<: *node
+    environment: { <<: *node-env, NICK: guard1, ROLES: "guard,middle" }
+  middle1:
+    <<: *node
+    environment: { <<: *node-env, NICK: middle1, ROLES: middle }
+  exit1:
+    <<: *node
+    environment: { <<: *node-env, NICK: exit1, ROLES: exit, REJECT_PORTS: "25,465,587" }
+  exit2:
+    <<: *node
+    # этот выход дополнительно не пропускает 8080 — клиент обязан это учесть
+    environment: { <<: *node-env, NICK: exit2, ROLES: "middle,exit", REJECT_PORTS: "25,8080" }
+
+  client:
+    build: { context: .., dockerfile: lab/Dockerfile }
+    command: ["client",
+              "-directory", "http://directory1:8500,http://directory2:8500,http://directory3:8500",
+              "-bridge-token", "labbridge", "-state", "/tmp/state.json",
+              "-listen", "0.0.0.0", "-socks", "9050", "-http", "9080",
+              "-circuits", "3", "-guards", "2", "-ignore-net", "-verbose"]
+    ports: ["127.0.0.1:9050:9050", "127.0.0.1:9080:9080"]
+    depends_on: [bridge1, bridge2, guard1, middle1, exit1, exit2]
+    restart: unless-stopped
+
+volumes:
+  dir1:
+  dir2:
+  dir3:
